@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: kloc_db
+    restart: always
+    env_file:
+      - ./backend/.env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kloc_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kloc_backend
+    restart: always
+    # Không expose ra host khi dùng nginx; bỏ comment dòng dưới nếu cần debug trực tiếp
+    # ports:
+    #   - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-super-secret-key-12345}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      # Dùng container name kloc_frontend thay vì service name để hoạt động xuyên network
+      FRONTEND_REVALIDATE_URL: ${FRONTEND_REVALIDATE_URL:-http://kloc_frontend:3000/api/revalidate}
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-kloc-revalidate-secret}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_contracts:/app/app/services/contracts
+    networks:
+      - kloc_network
+      - nginx_default   # Để nginx proxy đến kloc_backend:8000 bằng container name
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: kloc_frontend
+    restart: always
+    user: root
+    # Không expose ra host khi dùng nginx; bỏ comment dòng dưới nếu cần debug trực tiếp
+    # ports:
+    #   - "3000:3000"
+    environment:
+      # API_URL: Next.js server dùng để proxy rewrite sang backend qua Docker network
+      - API_URL=http://kloc_backend:8000
+      - REVALIDATE_SECRET=${REVALIDATE_SECRET:-kloc-revalidate-secret}
+      - NEXT_PUBLIC_REVALIDATE_SECRET=${REVALIDATE_SECRET:-kloc-revalidate-secret}
+    depends_on:
+      - backend
+    volumes:
+      - ./system_docs:/app/system_docs
+    networks:
+      - kloc_network
+      - nginx_default   # Để nginx proxy đến kloc_frontend:3000 bằng container name
+
+volumes:
+  pgdata:
+    name: kloc_pgdata # Explicitly named to avoid incidental removal
+  backend_uploads:
+  backend_contracts:
+
+networks:
+  # Mạng nội bộ giữa các service trong project
+  kloc_network:
+    driver: bridge
+  # Mạng chung với nginx (đã tồn tại trên server với tên nginx_proxy)
+  # Nginx khai báo upstream bằng container name: kloc_backend:8000, kloc_frontend:3000
+  nginx_default:
+    external: true
+    name: nginx_default  
